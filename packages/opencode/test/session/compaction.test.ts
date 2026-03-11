@@ -227,6 +227,212 @@ describe("session.compaction.isOverflow", () => {
   })
 })
 
+describe("session.compaction.prepareMessages", () => {
+  test("keeps the prior summary and newest turns when the full session no longer fits", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = createModel({ context: 2_400, input: 2_400, output: 400 })
+        const hugeUser = "OLDER_USER_" + "x".repeat(20_000)
+        const hugeAssistant = "OLDER_ASSISTANT_" + "y".repeat(20_000)
+        const prepared = await SessionCompaction.prepareMessages({
+          model,
+          promptText: "Summarize the work so far.",
+          messages: [
+            {
+              info: {
+                id: "message_user_summary",
+                sessionID: "session_test",
+                role: "user",
+                time: { created: 1 },
+                agent: "sisyphus",
+                model: { providerID: "test", modelID: "test-model" },
+              },
+              parts: [
+                {
+                  id: "part_user_summary",
+                  sessionID: "session_test",
+                  messageID: "message_user_summary",
+                  type: "compaction",
+                  auto: true,
+                },
+              ],
+            },
+            {
+              info: {
+                id: "message_assistant_summary",
+                sessionID: "session_test",
+                role: "assistant",
+                parentID: "message_user_summary",
+                modelID: "test-model",
+                providerID: "test",
+                mode: "compaction",
+                agent: "compaction",
+                path: { cwd: tmp.path, root: tmp.path },
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                time: { created: 2, completed: 3 },
+                summary: true,
+                finish: "stop",
+              },
+              parts: [
+                {
+                  id: "part_assistant_summary",
+                  sessionID: "session_test",
+                  messageID: "message_assistant_summary",
+                  type: "text",
+                  text: "SUMMARY_KEEP_ME",
+                },
+              ],
+            },
+            {
+              info: {
+                id: "message_user_old",
+                sessionID: "session_test",
+                role: "user",
+                time: { created: 4 },
+                agent: "sisyphus",
+                model: { providerID: "test", modelID: "test-model" },
+              },
+              parts: [
+                {
+                  id: "part_user_old",
+                  sessionID: "session_test",
+                  messageID: "message_user_old",
+                  type: "text",
+                  text: hugeUser,
+                },
+              ],
+            },
+            {
+              info: {
+                id: "message_assistant_old",
+                sessionID: "session_test",
+                role: "assistant",
+                parentID: "message_user_old",
+                modelID: "test-model",
+                providerID: "test",
+                mode: "sisyphus",
+                agent: "sisyphus",
+                path: { cwd: tmp.path, root: tmp.path },
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                time: { created: 5, completed: 6 },
+                finish: "stop",
+              },
+              parts: [
+                {
+                  id: "part_assistant_old",
+                  sessionID: "session_test",
+                  messageID: "message_assistant_old",
+                  type: "text",
+                  text: hugeAssistant,
+                },
+              ],
+            },
+            {
+              info: {
+                id: "message_user_recent",
+                sessionID: "session_test",
+                role: "user",
+                time: { created: 7 },
+                agent: "sisyphus",
+                model: { providerID: "test", modelID: "test-model" },
+              },
+              parts: [
+                {
+                  id: "part_user_recent",
+                  sessionID: "session_test",
+                  messageID: "message_user_recent",
+                  type: "text",
+                  text: "RECENT_USER_KEEP_ME",
+                },
+              ],
+            },
+            {
+              info: {
+                id: "message_assistant_recent",
+                sessionID: "session_test",
+                role: "assistant",
+                parentID: "message_user_recent",
+                modelID: "test-model",
+                providerID: "test",
+                mode: "sisyphus",
+                agent: "sisyphus",
+                path: { cwd: tmp.path, root: tmp.path },
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                time: { created: 8, completed: 9 },
+                finish: "stop",
+              },
+              parts: [
+                {
+                  id: "part_assistant_recent",
+                  sessionID: "session_test",
+                  messageID: "message_assistant_recent",
+                  type: "text",
+                  text: "RECENT_ASSISTANT_KEEP_ME",
+                },
+              ],
+            },
+          ],
+        })
+
+        const rendered = JSON.stringify(prepared.messages)
+        expect(prepared.truncated).toBe(true)
+        expect(prepared.trimmed).toBe(true)
+        expect(rendered).toContain("SUMMARY_KEEP_ME")
+        expect(rendered).toContain("RECENT_USER_KEEP_ME")
+        expect(rendered).toContain("RECENT_ASSISTANT_KEEP_ME")
+        expect(rendered).not.toContain("OLDER_USER_")
+        expect(rendered).not.toContain("OLDER_ASSISTANT_")
+      },
+    })
+  })
+
+  test("aggressively truncates the latest oversized turn instead of dropping it", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = createModel({ context: 2_400, input: 2_400, output: 400 })
+        const hugeUser = "LATEST_USER_" + "z".repeat(16_000)
+        const prepared = await SessionCompaction.prepareMessages({
+          model,
+          promptText: "Summarize the work so far.",
+          messages: [
+            {
+              info: {
+                id: "message_user_latest",
+                sessionID: "session_test",
+                role: "user",
+                time: { created: 1 },
+                agent: "sisyphus",
+                model: { providerID: "test", modelID: "test-model" },
+              },
+              parts: [
+                {
+                  id: "part_user_latest",
+                  sessionID: "session_test",
+                  messageID: "message_user_latest",
+                  type: "text",
+                  text: hugeUser,
+                },
+              ],
+            },
+          ],
+        })
+
+        const rendered = JSON.stringify(prepared.messages)
+        expect(prepared.truncated).toBe(true)
+        expect(rendered).toContain("LATEST_USER_")
+        expect(rendered).toContain("[Truncated for compaction:")
+      },
+    })
+  })
+})
+
 describe("util.token.estimate", () => {
   test("estimates tokens from text (4 chars per token)", () => {
     const text = "x".repeat(4000)

@@ -14,6 +14,7 @@ import { Agent } from "@/agent/agent"
 import { Plugin } from "@/plugin"
 import { Config } from "@/config/config"
 import { ProviderTransform } from "@/provider/transform"
+import type { ModelMessage } from "ai"
 
 export namespace SessionCompaction {
   const log = Log.create({ service: "session.compaction" })
@@ -28,6 +29,251 @@ export namespace SessionCompaction {
   }
 
   const COMPACTION_BUFFER = 20_000
+  const COMPACTION_PART_CHAR_LIMIT = 4_000
+  const AGGRESSIVE_COMPACTION_PART_CHAR_LIMIT = 1_200
+
+  function truncateTextForCompaction(text: string, limit: number) {
+    if (text.length <= limit) return text
+    const head = Math.max(200, Math.floor(limit * 0.75))
+    const tail = Math.max(100, limit - head)
+    const omitted = Math.max(0, text.length - head - tail)
+    return [
+      text.slice(0, head),
+      `[Truncated for compaction: ${omitted} chars omitted]`,
+      text.slice(-tail),
+    ].join("\n\n")
+  }
+
+  function compressMessageForCompaction(input: MessageV2.WithParts, limit = COMPACTION_PART_CHAR_LIMIT): MessageV2.WithParts {
+    return {
+      info: input.info,
+      parts: input.parts.map((part) => {
+        if (part.type === "text") {
+          return { ...part, text: truncateTextForCompaction(part.text, limit) }
+        }
+        if (part.type === "reasoning") {
+          return {
+            ...part,
+            text: truncateTextForCompaction(part.text, Math.max(400, Math.floor(limit / 2))),
+          }
+        }
+        if (part.type === "tool") {
+          if (part.state.status === "completed") {
+            return {
+              ...part,
+              state: {
+                ...part.state,
+                output: truncateTextForCompaction(part.state.output, limit),
+                attachments: [],
+              },
+            }
+          }
+          if (part.state.status === "error") {
+            return {
+              ...part,
+              state: {
+                ...part.state,
+                error: truncateTextForCompaction(part.state.error, Math.max(400, Math.floor(limit / 2))),
+              },
+            }
+          }
+          if (part.state.status === "pending") {
+            return {
+              ...part,
+              state: {
+                ...part.state,
+                raw: truncateTextForCompaction(part.state.raw, Math.max(400, Math.floor(limit / 2))),
+              },
+            }
+          }
+        }
+        return part
+      }),
+    }
+  }
+
+  function estimateCompactionValue(value: unknown): number {
+    if (typeof value === "string") return Token.estimate(value)
+    if (typeof value === "number" || typeof value === "boolean") return 1
+    if (!value) return 0
+    if (Array.isArray(value)) return value.reduce((sum, item) => sum + estimateCompactionValue(item), 0)
+    if (typeof value === "object") {
+      return Object.entries(value).reduce(
+        (sum, [key, item]) => sum + Token.estimate(key) + estimateCompactionValue(item),
+        0,
+      )
+    }
+    return 0
+  }
+
+  function estimateCompactionMessages(messages: ModelMessage[]) {
+    return messages.reduce((sum, message) => sum + estimateCompactionValue(message.content), 0)
+  }
+
+  async function inputBudget(model: Provider.Model) {
+    const config = await Config.get()
+    const context = model.limit.context
+    if (context === 0) return Number.POSITIVE_INFINITY
+    const reserved =
+      config.compaction?.reserved ?? Math.min(COMPACTION_BUFFER, ProviderTransform.maxOutputTokens(model))
+    const usable = model.limit.input
+      ? model.limit.input - reserved
+      : context - ProviderTransform.maxOutputTokens(model)
+    return Math.max(0, usable)
+  }
+
+  function summaryPrefixCount(messages: MessageV2.WithParts[]) {
+    if (messages.length < 2) return 0
+    const [first, second] = messages
+    if (!first || !second) return 0
+    if (first.info.role !== "user" || second.info.role !== "assistant") return 0
+    if (!first.parts.some((part) => part.type === "compaction")) return 0
+    if (!second.info.summary || second.info.error) return 0
+    return 2
+  }
+
+  async function toCompactionModelMessages(input: {
+    messages: MessageV2.WithParts[]
+    model: Provider.Model
+    promptText: string
+  }) {
+    return [
+      ...(await MessageV2.toModelMessages(input.messages, input.model, { stripMedia: true })),
+      {
+        role: "user" as const,
+        content: [
+          {
+            type: "text" as const,
+            text: input.promptText,
+          },
+        ],
+      },
+    ] satisfies ModelMessage[]
+  }
+
+  async function estimateSourceMessage(input: { message: MessageV2.WithParts; model: Provider.Model }) {
+    const converted = await MessageV2.toModelMessages([input.message], input.model, { stripMedia: true })
+    return estimateCompactionMessages(converted)
+  }
+
+  async function selectCompactionWindow(input: {
+    messages: MessageV2.WithParts[]
+    model: Provider.Model
+    budget: number
+    promptEstimate: number
+  }) {
+    const prefixCount = summaryPrefixCount(input.messages)
+    const promptBudget = Number.isFinite(input.budget) ? Math.max(0, input.budget - input.promptEstimate) : input.budget
+    const selected: MessageV2.WithParts[] = []
+    let used = 0
+    let sawUser = false
+
+    for (let index = input.messages.length - 1; index >= prefixCount; index--) {
+      let candidate = input.messages[index]!
+      let estimate = await estimateSourceMessage({ message: candidate, model: input.model })
+      const mustKeep = selected.length === 0 || !sawUser
+      const remaining = Number.isFinite(promptBudget) ? promptBudget - used : Number.POSITIVE_INFINITY
+
+      if (estimate > remaining && mustKeep) {
+        candidate = compressMessageForCompaction(candidate, AGGRESSIVE_COMPACTION_PART_CHAR_LIMIT)
+        estimate = await estimateSourceMessage({ message: candidate, model: input.model })
+      }
+
+      if (!mustKeep && estimate > remaining) continue
+
+      selected.unshift(candidate)
+      used += estimate
+      if (candidate.info.role === "user") sawUser = true
+    }
+
+    if (selected.length === 0) {
+      const fallback = input.messages.at(-1)
+      if (!fallback) return []
+      return [compressMessageForCompaction(fallback, AGGRESSIVE_COMPACTION_PART_CHAR_LIMIT)]
+    }
+
+    while (selected[0]?.info.role === "assistant") {
+      const assistant = selected[0].info
+      const hasParent = selected.some((message) => message.info.role === "user" && message.info.id === assistant.parentID)
+      if (hasParent) break
+      selected.shift()
+    }
+
+    if (prefixCount === 0) return selected
+
+    const prefix = input.messages.slice(0, prefixCount)
+    let prefixEstimate = 0
+    for (const message of prefix) {
+      prefixEstimate += await estimateSourceMessage({ message, model: input.model })
+    }
+
+    if (prefixEstimate + used <= promptBudget) return [...prefix, ...selected]
+    return selected
+  }
+
+  export async function prepareMessages(input: {
+    messages: MessageV2.WithParts[]
+    model: Provider.Model
+    promptText: string
+  }) {
+    const budget = await inputBudget(input.model)
+    const exactMessages = await toCompactionModelMessages(input)
+    const exactEstimate = estimateCompactionMessages(exactMessages)
+    if (exactEstimate <= budget) {
+      return {
+        messages: exactMessages,
+        budget,
+        estimate: exactEstimate,
+        truncated: false,
+        trimmed: false,
+      }
+    }
+
+    const truncatedSource = input.messages.map((message) => compressMessageForCompaction(message))
+    const truncatedPrompt = [
+      "Some long message content and tool output was truncated to fit the compaction model's context window.",
+      input.promptText,
+    ].join("\n\n")
+    const truncatedMessages = await toCompactionModelMessages({
+      messages: truncatedSource,
+      model: input.model,
+      promptText: truncatedPrompt,
+    })
+    const truncatedEstimate = estimateCompactionMessages(truncatedMessages)
+    if (truncatedEstimate <= budget) {
+      return {
+        messages: truncatedMessages,
+        budget,
+        estimate: truncatedEstimate,
+        truncated: true,
+        trimmed: false,
+      }
+    }
+
+    const promptEstimate = Token.estimate(truncatedPrompt)
+    const trimmedSource = await selectCompactionWindow({
+      messages: truncatedSource,
+      model: input.model,
+      budget,
+      promptEstimate,
+    })
+    const trimmedPrompt = [
+      "Only the most relevant recent turns, plus any prior compaction summary that still fits, are included below because the full session exceeded the compaction model's context window.",
+      truncatedPrompt,
+    ].join("\n\n")
+    const trimmedMessages = await toCompactionModelMessages({
+      messages: trimmedSource,
+      model: input.model,
+      promptText: trimmedPrompt,
+    })
+    return {
+      messages: trimmedMessages,
+      budget,
+      estimate: estimateCompactionMessages(trimmedMessages),
+      truncated: true,
+      trimmed: trimmedSource.length < input.messages.length,
+    }
+  }
 
   export async function isOverflow(input: { tokens: MessageV2.Assistant["tokens"]; model: Provider.Model }) {
     const config = await Config.get()
@@ -199,6 +445,21 @@ When constructing the summary, try to stick to this template:
 ---`
 
     const promptText = compacting.prompt ?? [defaultPrompt, ...compacting.context].join("\n\n")
+    const prepared = await prepareMessages({
+      messages,
+      model,
+      promptText,
+    })
+    if (prepared.truncated || prepared.trimmed) {
+      log.info("reduced compaction input", {
+        sessionID: input.sessionID,
+        estimate: prepared.estimate,
+        budget: prepared.budget,
+        truncated: prepared.truncated,
+        trimmed: prepared.trimmed,
+      })
+    }
+
     const result = await processor.process({
       user: userMessage,
       agent,
@@ -206,26 +467,15 @@ When constructing the summary, try to stick to this template:
       sessionID: input.sessionID,
       tools: {},
       system: [],
-      messages: [
-        ...MessageV2.toModelMessages(messages, model, { stripMedia: true }),
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: promptText,
-            },
-          ],
-        },
-      ],
+      messages: prepared.messages,
       model,
     })
 
     if (result === "compact") {
       processor.message.error = new MessageV2.ContextOverflowError({
         message: replay
-          ? "Conversation history too large to compact - exceeds model context limit"
-          : "Session too large to compact - context exceeds model limit even after stripping media",
+          ? "Conversation history too large to compact - exceeds model context limit even after reducing compaction input"
+          : "Session too large to compact - context exceeds model limit even after reducing compaction input",
       }).toObject()
       processor.message.finish = "error"
       await Session.updateMessage(processor.message)
