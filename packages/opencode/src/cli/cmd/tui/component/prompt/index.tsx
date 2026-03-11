@@ -21,7 +21,7 @@ import { useRenderer } from "@opentui/solid"
 import { Editor } from "@tui/util/editor"
 import { useExit } from "../../context/exit"
 import { Clipboard } from "../../util/clipboard"
-import type { AssistantMessage, FilePart } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
 import { TuiEvent } from "../../event"
 import { iife } from "@/util/iife"
 import { Locale } from "@/util/locale"
@@ -34,7 +34,10 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
-import { getPromptStateFromCompletedAssistant } from "./session-model-sync"
+import {
+  getPromptStateFromCompletedAssistant,
+  isInternalRuntimeFallbackPrompt,
+} from "./session-model-sync"
 
 export type PromptProps = {
   sessionID?: string
@@ -122,6 +125,16 @@ export function Prompt(props: PromptProps) {
     return messages.findLast((m) => m.role === "user")
   })
 
+  const lastRealUserMessage = createMemo(() => {
+    if (!props.sessionID) return undefined
+    const messages = sync.data.message[props.sessionID]
+    if (!messages) return undefined
+    return messages.findLast(
+      (message): message is UserMessage =>
+        message.role === "user" && !isInternalRuntimeFallbackPrompt(sync.data.part[message.id] ?? []),
+    )
+  })
+
   const lastCompletedAssistantMessage = createMemo(() => {
     if (!props.sessionID) return undefined
     const messages = sync.data.message[props.sessionID]
@@ -192,7 +205,7 @@ export function Prompt(props: PromptProps) {
 
     const next = getPromptStateFromCompletedAssistant({
       assistant,
-      user: lastUserMessage(),
+      user: lastRealUserMessage(),
       primaryAgents: local.agent.list().map((agent) => agent.name),
     })
     if (!next) return

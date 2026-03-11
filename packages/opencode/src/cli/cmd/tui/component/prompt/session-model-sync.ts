@@ -1,4 +1,12 @@
-import type { AssistantMessage, UserMessage } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, Part, UserMessage } from "@opencode-ai/sdk/v2"
+
+const OMO_INTERNAL_INITIATOR_MARKER = "<!-- OMO_INTERNAL_INITIATOR -->"
+
+export function isInternalRuntimeFallbackPrompt(parts: Part[]) {
+  return parts.some(
+    (part) => part.type === "text" && typeof part.text === "string" && part.text.includes(OMO_INTERNAL_INITIATOR_MARKER),
+  )
+}
 
 export function getPromptStateFromCompletedAssistant(input: {
   assistant?: AssistantMessage

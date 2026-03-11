@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import type { AssistantMessage, UserMessage } from "@opencode-ai/sdk/v2"
-import { getPromptStateFromCompletedAssistant } from "../../../src/cli/cmd/tui/component/prompt/session-model-sync"
+import type { AssistantMessage, Part, UserMessage } from "@opencode-ai/sdk/v2"
+import {
+  getPromptStateFromCompletedAssistant,
+  isInternalRuntimeFallbackPrompt,
+} from "../../../src/cli/cmd/tui/component/prompt/session-model-sync"
 
 function userMessage(input?: Partial<Pick<UserMessage, "agent" | "model" | "variant">>): UserMessage {
   return {
@@ -47,6 +50,20 @@ function assistantMessage(
 }
 
 describe("prompt model sync", () => {
+  test("detects internal runtime fallback prompt markers", () => {
+    const parts: Part[] = [
+      {
+        id: "part",
+        messageID: "msg_user",
+        sessionID: "ses_test",
+        type: "text",
+        text: "continue\n<!-- OMO_INTERNAL_INITIATOR -->",
+      },
+    ]
+
+    expect(isInternalRuntimeFallbackPrompt(parts)).toBe(true)
+  })
+
   test("returns the completed assistant fallback model for the next turn", () => {
     const result = getPromptStateFromCompletedAssistant({
       assistant: assistantMessage(),
