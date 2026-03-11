@@ -21,7 +21,7 @@ import { useRenderer } from "@opentui/solid"
 import { Editor } from "@tui/util/editor"
 import { useExit } from "../../context/exit"
 import { Clipboard } from "../../util/clipboard"
-import type { FilePart } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, FilePart } from "@opencode-ai/sdk/v2"
 import { TuiEvent } from "../../event"
 import { iife } from "@/util/iife"
 import { Locale } from "@/util/locale"
@@ -34,6 +34,7 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
+import { getPromptStateFromCompletedAssistant } from "./session-model-sync"
 
 export type PromptProps = {
   sessionID?: string
@@ -121,6 +122,16 @@ export function Prompt(props: PromptProps) {
     return messages.findLast((m) => m.role === "user")
   })
 
+  const lastCompletedAssistantMessage = createMemo(() => {
+    if (!props.sessionID) return undefined
+    const messages = sync.data.message[props.sessionID]
+    if (!messages) return undefined
+    return messages.findLast(
+      (message): message is AssistantMessage =>
+        message.role === "assistant" && message.time.completed !== undefined && !message.error,
+    )
+  })
+
   const [store, setStore] = createStore<{
     prompt: PromptInfo
     mode: "normal" | "shell"
@@ -148,7 +159,7 @@ export function Prompt(props: PromptProps) {
     ),
   )
 
-  // Initialize agent/model/variant from last user message when session changes
+  // Initialize agent/model/variant from last user message when session changes.
   let syncedSessionID: string | undefined
   createEffect(() => {
     const sessionID = props.sessionID
@@ -164,9 +175,32 @@ export function Prompt(props: PromptProps) {
       if (msg.agent && isPrimaryAgent) {
         local.agent.set(msg.agent)
         if (msg.model) local.model.set(msg.model)
-        if (msg.variant) local.model.variant.set(msg.variant)
+        local.model.variant.set(msg.variant)
       }
     }
+  })
+
+  let syncedAssistantMessageKey: string | undefined
+  createEffect(() => {
+    const sessionID = props.sessionID
+    const assistant = lastCompletedAssistantMessage()
+    if (!sessionID || !assistant) return
+    if (status().type !== "idle") return
+
+    const syncKey = `${sessionID}:${assistant.id}`
+    if (syncKey === syncedAssistantMessageKey) return
+
+    const next = getPromptStateFromCompletedAssistant({
+      assistant,
+      user: lastUserMessage(),
+      primaryAgents: local.agent.list().map((agent) => agent.name),
+    })
+    if (!next) return
+
+    syncedAssistantMessageKey = syncKey
+    local.agent.set(next.agent)
+    local.model.set(next.model)
+    local.model.variant.set(next.variant)
   })
 
   command.register(() => {
