@@ -497,7 +497,23 @@ export namespace Config {
    */
   export function getPluginName(plugin: string): string {
     if (plugin.startsWith("file://")) {
-      return path.parse(new URL(plugin).pathname).name
+      const pathname = new URL(plugin).pathname
+      const parsed = path.parse(pathname)
+      if (parsed.name !== "index") {
+        return parsed.name
+      }
+
+      const parent = path.basename(path.dirname(pathname))
+      if (parent && parent !== "dist") {
+        return parent
+      }
+
+      const grandparent = path.basename(path.dirname(path.dirname(pathname)))
+      if (grandparent) {
+        return grandparent
+      }
+
+      return parsed.name
     }
     const lastAt = plugin.lastIndexOf("@")
     if (lastAt > 0) {
