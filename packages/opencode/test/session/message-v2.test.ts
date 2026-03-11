@@ -150,6 +150,28 @@ describe("session.message-v2.toModelMessage", () => {
     expect(MessageV2.toModelMessages(input, model)).toStrictEqual([])
   })
 
+  test("filters out user messages ignored at the message level", () => {
+    const messageID = "m-user"
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: {
+          ...userInfo(messageID),
+          ignored: true,
+        },
+        parts: [
+          {
+            ...basePart(messageID, "p1"),
+            type: "text",
+            text: "stale queued prompt",
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    expect(MessageV2.toModelMessages(input, model)).toStrictEqual([])
+  })
+
   test("includes synthetic text parts", () => {
     const messageID = "m-user"
 

@@ -352,6 +352,7 @@ export namespace MessageV2 {
     time: z.object({
       created: z.number(),
     }),
+    ignored: z.boolean().optional(),
     format: Format.optional(),
     summary: z
       .object({
@@ -558,6 +559,7 @@ export namespace MessageV2 {
       if (msg.parts.length === 0) continue
 
       if (msg.info.role === "user") {
+        if (msg.info.ignored) continue
         const userMessage: UIMessage = {
           id: msg.info.id,
           role: "user",

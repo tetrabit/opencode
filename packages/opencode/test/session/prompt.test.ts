@@ -209,3 +209,104 @@ describe("session.prompt agent variant", () => {
     }
   })
 })
+
+describe("session.prompt prompt tombstoning", () => {
+  test("marks superseded queued prompts ignored before they can run later", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        agent: {
+          build: {
+            model: "openai/gpt-5.2",
+          },
+        },
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const queueKey = `runtime-fallback:${session.id}`
+
+        const stale = await SessionPrompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [
+            {
+              type: "text",
+              text: "stale queued prompt",
+              metadata: {
+                opencodePromptQueue: {
+                  supersessionKey: queueKey,
+                  attemptID: "attempt-1",
+                },
+              },
+            },
+          ],
+        })
+
+        const fresh = await SessionPrompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [
+            {
+              type: "text",
+              text: "fallback retry prompt",
+              metadata: {
+                opencodePromptQueue: {
+                  supersessionKey: queueKey,
+                  attemptID: "attempt-2",
+                  supersedePending: "all",
+                },
+              },
+            },
+          ],
+        })
+
+        const staleStored = await MessageV2.get({
+          sessionID: session.id,
+          messageID: stale.info.id,
+        })
+        const freshStored = await MessageV2.get({
+          sessionID: session.id,
+          messageID: fresh.info.id,
+        })
+
+        expect(staleStored.info.role).toBe("user")
+        if (staleStored.info.role !== "user") throw new Error("expected stale user message")
+        expect(staleStored.info.ignored).toBe(true)
+
+        const staleText = staleStored.parts.find((part) => part.type === "text")
+        expect(staleText?.type).toBe("text")
+        if (staleText?.type !== "text") throw new Error("expected stale text part")
+        expect(staleText.ignored).toBe(true)
+
+        const freshText = freshStored.parts.find((part) => part.type === "text")
+        expect(freshText?.type).toBe("text")
+        if (freshText?.type !== "text") throw new Error("expected fresh text part")
+        expect(freshText.ignored).toBeUndefined()
+
+        const history = await MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const modelInput = MessageV2.toModelMessages(history, {
+          api: {
+            npm: "@ai-sdk/openai",
+          },
+          providerID: "openai",
+          id: "gpt-5.2",
+        } as never)
+
+        expect(modelInput).toStrictEqual([
+          {
+            role: "user",
+            content: [{ type: "text", text: "fallback retry prompt" }],
+          },
+        ])
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+})

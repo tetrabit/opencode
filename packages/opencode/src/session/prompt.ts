@@ -62,6 +62,16 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
+  const PROMPT_QUEUE_METADATA_KEY = "opencodePromptQueue"
+
+  type PromptQueueSupersedePending = "all" | "matching-key"
+  type PromptQueueControl = {
+    supersessionKey?: string
+    attemptID?: string
+    supersedePending?: PromptQueueSupersedePending
+    tombstonedAt?: number
+    tombstonedBy?: string
+  }
 
   const state = Instance.state(
     () => {
@@ -161,6 +171,7 @@ export namespace SessionPrompt {
     await SessionRevert.cleanup(session)
 
     const message = await createUserMessage(input)
+    await tombstoneSupersededQueuedPrompts(message)
     await Session.touch(input.sessionID)
 
     // this is backwards compatibility for allowing `tools` to be specified when
@@ -263,9 +274,120 @@ export namespace SessionPrompt {
       return
     }
     match.abort.abort()
+    for (const callback of match.callbacks) {
+      const error = new Error(`Session prompt aborted: ${sessionID}`)
+      error.name = "MessageAbortedError"
+      callback.reject(error)
+    }
     delete s[sessionID]
     SessionStatus.set(sessionID, { type: "idle" })
     return
+  }
+
+  function isIgnoredUserMessage(message: MessageV2.WithParts | { info: { role: string; ignored?: boolean } }) {
+    return message.info.role === "user" && message.info.ignored === true
+  }
+
+  function hasRunnableUserParts(parts: MessageV2.Part[]) {
+    return parts.some((part) => part.type !== "text" || !part.ignored)
+  }
+
+  function getPromptQueueControlFromMetadata(metadata: unknown): PromptQueueControl | undefined {
+    if (!metadata || typeof metadata !== "object") return undefined
+
+    const rawQueueControl = (metadata as Record<string, unknown>)[PROMPT_QUEUE_METADATA_KEY]
+    if (!rawQueueControl || typeof rawQueueControl !== "object") return undefined
+
+    const record = rawQueueControl as Record<string, unknown>
+    const supersedePending = record.supersedePending
+
+    return {
+      supersessionKey:
+        typeof record.supersessionKey === "string" && record.supersessionKey.length > 0
+          ? record.supersessionKey
+          : undefined,
+      attemptID:
+        typeof record.attemptID === "string" && record.attemptID.length > 0 ? record.attemptID : undefined,
+      supersedePending:
+        supersedePending === "all" || supersedePending === "matching-key" ? supersedePending : undefined,
+      tombstonedAt: typeof record.tombstonedAt === "number" ? record.tombstonedAt : undefined,
+      tombstonedBy:
+        typeof record.tombstonedBy === "string" && record.tombstonedBy.length > 0 ? record.tombstonedBy : undefined,
+    }
+  }
+
+  function getPromptQueueControlFromParts(parts: MessageV2.Part[]) {
+    for (const part of parts) {
+      if (!("metadata" in part)) continue
+      const queueControl = getPromptQueueControlFromMetadata(part.metadata)
+      if (queueControl) return queueControl
+    }
+    return undefined
+  }
+
+  async function tombstoneSupersededQueuedPrompts(message: MessageV2.WithParts) {
+    if (message.info.role !== "user") return
+
+    const control = getPromptQueueControlFromParts(message.parts)
+    if (!control?.supersedePending) return
+
+    const history = await MessageV2.filterCompacted(MessageV2.stream(message.info.sessionID))
+    const tombstonedMessageIDs: string[] = []
+    const tombstonedAt = Date.now()
+
+    for (let i = history.length - 1; i >= 0; i--) {
+      const candidate = history[i]
+      if (candidate.info.id === message.info.id) continue
+
+      if (candidate.info.role === "assistant" && candidate.info.finish && !candidate.info.error) {
+        break
+      }
+
+      if (candidate.info.role !== "user" || isIgnoredUserMessage(candidate) || !hasRunnableUserParts(candidate.parts)) {
+        continue
+      }
+
+      if (control.supersedePending === "matching-key") {
+        const candidateControl = getPromptQueueControlFromParts(candidate.parts)
+        if (!candidateControl?.supersessionKey || candidateControl.supersessionKey !== control.supersessionKey) {
+          continue
+        }
+      }
+
+      await Session.updateMessage({
+        ...candidate.info,
+        ignored: true,
+      } satisfies MessageV2.User)
+
+      for (const part of candidate.parts) {
+        if (part.type !== "text" || part.ignored) continue
+
+        await Session.updatePart({
+          ...part,
+          ignored: true,
+          metadata: {
+            ...(part.metadata ?? {}),
+            [PROMPT_QUEUE_METADATA_KEY]: {
+              ...getPromptQueueControlFromMetadata(part.metadata),
+              tombstonedAt,
+              tombstonedBy: message.info.id,
+            },
+          },
+        })
+      }
+
+      tombstonedMessageIDs.push(candidate.info.id)
+    }
+
+    if (tombstonedMessageIDs.length > 0) {
+      log.info("tombstoned superseded queued prompts", {
+        sessionID: message.info.sessionID,
+        currentMessageID: message.info.id,
+        supersedePending: control.supersedePending,
+        supersessionKey: control.supersessionKey,
+        tombstonedMessageIDs,
+      })
+    }
   }
 
   export const LoopInput = z.object({
@@ -304,7 +426,9 @@ export namespace SessionPrompt {
       let tasks: (MessageV2.CompactionPart | MessageV2.SubtaskPart)[] = []
       for (let i = msgs.length - 1; i >= 0; i--) {
         const msg = msgs[i]
-        if (!lastUser && msg.info.role === "user") lastUser = msg.info as MessageV2.User
+        if (!lastUser && msg.info.role === "user" && !isIgnoredUserMessage(msg) && hasRunnableUserParts(msg.parts)) {
+          lastUser = msg.info as MessageV2.User
+        }
         if (!lastAssistant && msg.info.role === "assistant") lastAssistant = msg.info as MessageV2.Assistant
         if (!lastFinished && msg.info.role === "assistant" && msg.info.finish)
           lastFinished = msg.info as MessageV2.Assistant
@@ -598,7 +722,9 @@ export namespace SessionPrompt {
       using _ = defer(() => InstructionPrompt.clear(processor.message.id))
 
       // Check if user explicitly invoked an agent via @ in this turn
-      const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
+      const lastUserMsg = msgs.findLast(
+        (m) => m.info.role === "user" && !isIgnoredUserMessage(m) && hasRunnableUserParts(m.parts),
+      )
       const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
 
       const tools = await resolveTools({
@@ -733,7 +859,7 @@ export namespace SessionPrompt {
 
   async function lastModel(sessionID: string) {
     for await (const item of MessageV2.stream(sessionID)) {
-      if (item.info.role === "user" && item.info.model) return item.info.model
+      if (item.info.role === "user" && !isIgnoredUserMessage(item) && item.info.model) return item.info.model
     }
     return Provider.defaultModel()
   }
@@ -1327,7 +1453,9 @@ export namespace SessionPrompt {
   }
 
   async function insertReminders(input: { messages: MessageV2.WithParts[]; agent: Agent.Info; session: Session.Info }) {
-    const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
+    const userMessage = input.messages.findLast(
+      (msg) => msg.info.role === "user" && !isIgnoredUserMessage(msg) && hasRunnableUserParts(msg.parts),
+    )
     if (!userMessage) return input.messages
 
     // Original logic when experimental plan mode is disabled
@@ -1905,13 +2033,20 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
     // Find first non-synthetic user message
     const firstRealUserIdx = input.history.findIndex(
-      (m) => m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic),
+      (m) =>
+        m.info.role === "user" &&
+        !isIgnoredUserMessage(m) &&
+        !m.parts.every((p) => "synthetic" in p && p.synthetic),
     )
     if (firstRealUserIdx === -1) return
 
     const isFirst =
-      input.history.filter((m) => m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic))
-        .length === 1
+      input.history.filter(
+        (m) =>
+          m.info.role === "user" &&
+          !isIgnoredUserMessage(m) &&
+          !m.parts.every((p) => "synthetic" in p && p.synthetic),
+      ).length === 1
     if (!isFirst) return
 
     // Gather all messages up to and including the first real user message for context
