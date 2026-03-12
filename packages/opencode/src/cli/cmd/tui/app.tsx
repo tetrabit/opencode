@@ -237,7 +237,10 @@ function App() {
     }, 5000)
     toast.show({
       variant: "warning",
-      message: `${runningSessionCount === 1 ? "Stopped the running session" : `Stopped ${runningSessionCount} running sessions`}. Press Ctrl-C again to close.`,
+      message:
+        runningSessionCount > 0
+          ? `${runningSessionCount === 1 ? "Stopped the running session" : `Stopped ${runningSessionCount} running sessions`}. Press Ctrl-C again to close.`
+          : "Press Ctrl-C again to close.",
       duration: 5000,
     })
   }
@@ -291,17 +294,27 @@ function App() {
     }
 
     const runningSessionIDs = getRunningSessionIDs(sync.data.session_status)
-    evt.preventDefault()
-    evt.stopPropagation()
-
     const action = getCtrlCAction({
       armed: ctrlCExitArmed(),
       runningSessionCount: runningSessionIDs.length,
+      promptHasInput: Boolean(promptRef.current?.current.input),
     })
+
+    if (action === "pass-through") {
+      return
+    }
+
+    evt.preventDefault()
+    evt.stopPropagation()
 
     if (action === "exit") {
       clearCtrlCExitArm()
       await exit()
+      return
+    }
+
+    if (action === "arm-exit") {
+      armCtrlCExit(0)
       return
     }
 

@@ -20,15 +20,19 @@ describe("tui ctrl-c helpers", () => {
     ).toEqual(["loading", "responding"])
   })
 
-  test("exits immediately when ctrl-c is pressed without a running session", () => {
-    expect(getCtrlCAction({ armed: false, runningSessionCount: 0 })).toBe("exit")
+  test("arms exit when ctrl-c is pressed without a running session", () => {
+    expect(getCtrlCAction({ armed: false, runningSessionCount: 0, promptHasInput: false })).toBe("arm-exit")
   })
 
   test("arms exit after aborting running sessions", () => {
-    expect(getCtrlCAction({ armed: false, runningSessionCount: 2 })).toBe("abort-and-arm")
+    expect(getCtrlCAction({ armed: false, runningSessionCount: 2, promptHasInput: false })).toBe("abort-and-arm")
   })
 
   test("exits on the second ctrl-c while armed", () => {
-    expect(getCtrlCAction({ armed: true, runningSessionCount: 1 })).toBe("exit")
+    expect(getCtrlCAction({ armed: true, runningSessionCount: 1, promptHasInput: false })).toBe("exit")
+  })
+
+  test("lets the prompt clear itself when nothing is running and there is input", () => {
+    expect(getCtrlCAction({ armed: false, runningSessionCount: 0, promptHasInput: true })).toBe("pass-through")
   })
 })
