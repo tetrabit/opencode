@@ -36,6 +36,7 @@ import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
 import {
   getPromptStateFromCompletedAssistant,
+  getPromptStateFromRuntimeFallbackUser,
   isInternalRuntimeFallbackPrompt,
 } from "./session-model-sync"
 import { isCtrlCKeyEvent } from "../../util/ctrl-c"
@@ -195,6 +196,29 @@ export function Prompt(props: PromptProps) {
   })
 
   let syncedAssistantMessageKey: string | undefined
+  let syncedFallbackUserMessageKey: string | undefined
+
+  createEffect(() => {
+    const sessionID = props.sessionID
+    const user = lastUserMessage()
+    if (!sessionID || !user) return
+
+    const syncKey = `${sessionID}:${user.id}`
+    if (syncKey === syncedFallbackUserMessageKey) return
+
+    const next = getPromptStateFromRuntimeFallbackUser({
+      user,
+      parts: sync.data.part[user.id] ?? [],
+      primaryAgents: local.agent.list().map((agent) => agent.name),
+    })
+    if (!next) return
+
+    syncedFallbackUserMessageKey = syncKey
+    local.agent.set(next.agent)
+    local.model.set(next.model)
+    local.model.variant.set(next.variant)
+  })
+
   createEffect(() => {
     const sessionID = props.sessionID
     const assistant = lastCompletedAssistantMessage()

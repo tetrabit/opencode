@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { AssistantMessage, Part, UserMessage } from "@opencode-ai/sdk/v2"
 import {
   getPromptStateFromCompletedAssistant,
+  getPromptStateFromRuntimeFallbackUser,
   isInternalRuntimeFallbackPrompt,
 } from "../../../src/cli/cmd/tui/component/prompt/session-model-sync"
 
@@ -78,6 +79,30 @@ describe("prompt model sync", () => {
     })
   })
 
+  test("returns the runtime fallback user model immediately for the composer", () => {
+    const result = getPromptStateFromRuntimeFallbackUser({
+      user: userMessage({
+        model: { providerID: "openai", modelID: "gpt-5.4" },
+      }),
+      parts: [
+        {
+          id: "part",
+          messageID: "msg_user",
+          sessionID: "ses_test",
+          type: "text",
+          text: "Resume the interrupted task from session context.\n<!-- OMO_INTERNAL_INITIATOR -->",
+        },
+      ],
+      primaryAgents: ["Sisyphus (Ultraworker)"],
+    })
+
+    expect(result).toEqual({
+      agent: "Sisyphus (Ultraworker)",
+      model: { providerID: "openai", modelID: "gpt-5.4" },
+      variant: undefined,
+    })
+  })
+
   test("skips syncing when the assistant already matches the last user turn", () => {
     const result = getPromptStateFromCompletedAssistant({
       assistant: assistantMessage({
@@ -109,6 +134,42 @@ describe("prompt model sync", () => {
     })
 
     expect(incomplete).toBeUndefined()
+    expect(subagent).toBeUndefined()
+  })
+
+  test("skips immediate sync for normal user prompts or subagents", () => {
+    const normal = getPromptStateFromRuntimeFallbackUser({
+      user: userMessage(),
+      parts: [
+        {
+          id: "part",
+          messageID: "msg_user",
+          sessionID: "ses_test",
+          type: "text",
+          text: "hello",
+        },
+      ],
+      primaryAgents: ["Sisyphus (Ultraworker)"],
+    })
+
+    const subagent = getPromptStateFromRuntimeFallbackUser({
+      user: userMessage({
+        agent: "oracle",
+        model: { providerID: "openai", modelID: "gpt-5.4" },
+      }),
+      parts: [
+        {
+          id: "part",
+          messageID: "msg_user",
+          sessionID: "ses_test",
+          type: "text",
+          text: "Resume the interrupted task from session context.\n<!-- OMO_INTERNAL_INITIATOR -->",
+        },
+      ],
+      primaryAgents: ["Sisyphus (Ultraworker)"],
+    })
+
+    expect(normal).toBeUndefined()
     expect(subagent).toBeUndefined()
   })
 })
