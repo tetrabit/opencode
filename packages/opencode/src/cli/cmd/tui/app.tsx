@@ -3,7 +3,7 @@ import { Clipboard } from "@tui/util/clipboard"
 import { Selection } from "@tui/util/selection"
 import { MouseButton, TextAttributes } from "@opentui/core"
 import { RouteProvider, useRoute } from "@tui/context/route"
-import { Switch, Match, createEffect, untrack, ErrorBoundary, createSignal, onMount, batch, Show, on } from "solid-js"
+import { Switch, Match, createEffect, untrack, ErrorBoundary, createSignal, onMount, batch, Show, on, onCleanup } from "solid-js"
 import { win32DisableProcessedInput, win32FlushInputBuffer, win32InstallCtrlCGuard } from "./win32"
 import { Installation } from "@/installation"
 import { Flag } from "@/flag/flag"
@@ -41,6 +41,7 @@ import { writeHeapSnapshot } from "v8"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { TuiConfigProvider } from "./context/tui-config"
 import { TuiConfig } from "@/config/tui"
+import { getRunningSessionIDs, isCtrlCKeyEvent } from "./util/ctrl-c"
 
 async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
   // can't set raw mode if not a TTY
@@ -214,6 +215,33 @@ function App() {
   const sync = useSync()
   const exit = useExit()
   const promptRef = usePromptRef()
+  const [ctrlCExitArmed, setCtrlCExitArmed] = createSignal(false)
+  let ctrlCExitTimer: ReturnType<typeof setTimeout> | undefined
+
+  const clearCtrlCExitArm = () => {
+    if (ctrlCExitTimer) {
+      clearTimeout(ctrlCExitTimer)
+      ctrlCExitTimer = undefined
+    }
+    setCtrlCExitArmed(false)
+  }
+
+  const armCtrlCExit = (runningSessionCount: number) => {
+    clearCtrlCExitArm()
+    setCtrlCExitArmed(true)
+    ctrlCExitTimer = setTimeout(() => {
+      clearCtrlCExitArm()
+    }, 5000)
+    toast.show({
+      variant: "warning",
+      message: `${runningSessionCount === 1 ? "Stopped the running session" : `Stopped ${runningSessionCount} running sessions`}. Press Ctrl-C again to close.`,
+      duration: 5000,
+    })
+  }
+
+  onCleanup(() => {
+    clearCtrlCExitArm()
+  })
 
   useKeyboard((evt) => {
     if (!Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
@@ -242,6 +270,38 @@ function App() {
     }
 
     renderer.clearSelection()
+  })
+
+  useKeyboard(async (evt) => {
+    if (evt.defaultPrevented) return
+    if (!isCtrlCKeyEvent(evt)) {
+      if (ctrlCExitArmed()) clearCtrlCExitArm()
+      return
+    }
+
+    if (ctrlCExitArmed()) {
+      clearCtrlCExitArm()
+      evt.preventDefault()
+      evt.stopPropagation()
+      await exit()
+      return
+    }
+
+    const runningSessionIDs = getRunningSessionIDs(sync.data.session_status)
+    if (runningSessionIDs.length === 0) return
+
+    evt.preventDefault()
+    evt.stopPropagation()
+
+    await Promise.allSettled(
+      [...new Set(runningSessionIDs)].map((sessionID) =>
+        sdk.client.session.abort({
+          sessionID,
+        }),
+      ),
+    )
+
+    armCtrlCExit(runningSessionIDs.length)
   })
 
   // Wire up console copy-to-clipboard via opentui's onCopySelection callback

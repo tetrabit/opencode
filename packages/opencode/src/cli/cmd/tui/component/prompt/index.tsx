@@ -38,6 +38,7 @@ import {
   getPromptStateFromCompletedAssistant,
   isInternalRuntimeFallbackPrompt,
 } from "./session-model-sync"
+import { isCtrlCKeyEvent } from "../../util/ctrl-c"
 
 export type PromptProps = {
   sessionID?: string
@@ -926,7 +927,7 @@ export function Prompt(props: PromptProps) {
                   setStore("extmarkToPartIndex", new Map())
                   return
                 }
-                if (keybind.match("app_exit", e)) {
+                if (keybind.match("app_exit", e) && !isCtrlCKeyEvent(e)) {
                   if (store.prompt.input === "") {
                     await exit()
                     // Don't preventDefault - let textarea potentially handle the event

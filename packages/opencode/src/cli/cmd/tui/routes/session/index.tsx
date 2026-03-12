@@ -67,6 +67,7 @@ import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
 import { Clipboard } from "../../util/clipboard"
 import { Toast, useToast } from "../../ui/toast"
+import { isCtrlCKeyEvent } from "../../util/ctrl-c"
 import { useKV } from "../../context/kv.tsx"
 import { Editor } from "../../util/editor"
 import stripAnsi from "strip-ansi"
@@ -261,7 +262,7 @@ export function Session() {
 
   useKeyboard((evt) => {
     if (!session()?.parentID) return
-    if (keybind.match("app_exit", evt)) {
+    if (keybind.match("app_exit", evt) && !isCtrlCKeyEvent(evt)) {
       exit()
     }
   })
