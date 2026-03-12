@@ -41,7 +41,8 @@ import { writeHeapSnapshot } from "v8"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { TuiConfigProvider } from "./context/tui-config"
 import { TuiConfig } from "@/config/tui"
-import { getRunningSessionIDs, isCtrlCKeyEvent } from "./util/ctrl-c"
+import { getCtrlCAction, getRunningSessionIDs, isCtrlCKeyEvent } from "./util/ctrl-c"
+import { createMouseSequenceFilter } from "./util/mouse-sequence-filter"
 
 async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
   // can't set raw mode if not a TTY
@@ -118,6 +119,7 @@ export function tui(input: {
   return new Promise<void>(async (resolve) => {
     const unguard = win32InstallCtrlCGuard()
     win32DisableProcessedInput()
+    const mouseSequenceFilter = createMouseSequenceFilter()
 
     const mode = await getTerminalBackgroundColor()
 
@@ -185,6 +187,7 @@ export function tui(input: {
         gatherStats: false,
         exitOnCtrlC: false,
         useKittyKeyboard: {},
+        prependInputHandlers: [mouseSequenceFilter],
         autoFocus: false,
         openConsoleOnError: false,
         consoleOptions: {
@@ -288,10 +291,19 @@ function App() {
     }
 
     const runningSessionIDs = getRunningSessionIDs(sync.data.session_status)
-    if (runningSessionIDs.length === 0) return
-
     evt.preventDefault()
     evt.stopPropagation()
+
+    const action = getCtrlCAction({
+      armed: ctrlCExitArmed(),
+      runningSessionCount: runningSessionIDs.length,
+    })
+
+    if (action === "exit") {
+      clearCtrlCExitArm()
+      await exit()
+      return
+    }
 
     await Promise.allSettled(
       [...new Set(runningSessionIDs)].map((sessionID) =>

@@ -6,6 +6,7 @@ import { createStore } from "solid-js/store"
 import { useToast } from "./toast"
 import { Flag } from "@/flag/flag"
 import { Selection } from "@tui/util/selection"
+import { isCtrlCKeyEvent } from "../util/ctrl-c"
 
 export function Dialog(
   props: ParentProps<{
@@ -70,8 +71,8 @@ function init() {
   useKeyboard((evt) => {
     if (store.stack.length === 0) return
     if (evt.defaultPrevented) return
-    if ((evt.name === "escape" || (evt.ctrl && evt.name === "c")) && renderer.getSelection()) return
-    if (evt.name === "escape" || (evt.ctrl && evt.name === "c")) {
+    if ((evt.name === "escape" || isCtrlCKeyEvent(evt)) && renderer.getSelection()) return
+    if (evt.name === "escape") {
       const current = store.stack.at(-1)!
       current.onClose?.()
       setStore("stack", store.stack.slice(0, -1))
