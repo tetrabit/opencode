@@ -446,8 +446,10 @@ When constructing the summary, try to stick to this template:
 ---`
 
     const promptText = compacting.prompt ?? [defaultPrompt, ...compacting.context].join("\n\n")
+    const msgs = structuredClone(messages)
+    await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
     const prepared = await prepareMessages({
-      messages,
+      messages: msgs,
       model,
       promptText,
     })
@@ -460,7 +462,6 @@ When constructing the summary, try to stick to this template:
         trimmed: prepared.trimmed,
       })
     }
-
     const result = await processor.process({
       user: userMessage,
       agent,
