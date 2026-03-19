@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import {
+  CodexAuthPlugin,
   parseJwtClaims,
   extractAccountIdFromClaims,
   extractAccountId,
@@ -13,6 +14,16 @@ function createTestJwt(payload: object): string {
 }
 
 describe("plugin.codex", () => {
+  const originalFetch = globalThis.fetch
+
+  beforeEach(() => {
+    mock.restore()
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
   describe("parseJwtClaims", () => {
     test("parses valid JWT with claims", () => {
       const payload = { email: "test@example.com", chatgpt_account_id: "acc-123" }
@@ -118,6 +129,82 @@ describe("plugin.codex", () => {
           refresh_token: "rt",
         }),
       ).toBe("acc-123")
+    })
+  })
+
+  describe("CodexAuthPlugin", () => {
+    test("surfaces refresh error details from OAuth responses", async () => {
+      const fetchMock = mock(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
+        if (url === "https://auth.openai.com/oauth/token") {
+          return new Response(
+            JSON.stringify({
+              error: "invalid_grant",
+              error_description: "refresh token revoked",
+            }),
+            {
+              status: 400,
+              headers: { "content-type": "application/json" },
+            },
+          )
+        }
+
+        throw new Error(`Unexpected fetch: ${url}`)
+      })
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+
+      const setAuth = mock(async () => {})
+      const hooks = await CodexAuthPlugin({
+        client: {
+          auth: {
+            set: setAuth,
+          },
+        },
+      } as never)
+
+      const provider = {
+        models: {
+          "gpt-5.4": {
+            cost: { input: 1, output: 1, cache: { read: 1, write: 1 } },
+          },
+        },
+      } as never
+
+      const auth = hooks.auth
+      expect(auth).toBeDefined()
+      if (!auth) {
+        throw new Error("Expected auth hooks to be defined")
+      }
+
+      const loadAuth = auth.loader
+      expect(loadAuth).toBeDefined()
+      if (!loadAuth) {
+        throw new Error("Expected auth hooks to provide loader")
+      }
+
+      const loaded = await loadAuth(
+        async () => ({
+          type: "oauth" as const,
+          access: "",
+          refresh: "refresh-token",
+          expires: Date.now() - 1_000,
+          accountId: "acct_123",
+        }),
+        provider,
+      )
+
+      const fetchWithRefresh = loaded.fetch
+      expect(fetchWithRefresh).toBeDefined()
+      if (!fetchWithRefresh) {
+        throw new Error("Expected auth loader to provide fetch")
+      }
+
+      await expect(
+        fetchWithRefresh("https://api.openai.com/v1/responses", {
+          headers: { authorization: "Bearer dummy" },
+        }),
+      ).rejects.toThrow("Token refresh failed: 400 invalid_grant refresh token revoked")
+      expect(setAuth).not.toHaveBeenCalled()
     })
   })
 })

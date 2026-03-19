@@ -110,6 +110,77 @@ interface TokenResponse {
   expires_in?: number
 }
 
+interface OAuthErrorDetails {
+  errorCode?: string
+  detail?: string
+}
+
+function buildOAuthErrorMessage(prefix: string, statusCode: number, details?: OAuthErrorDetails): string {
+  const suffix = [details?.errorCode, details?.detail]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ")
+
+  return suffix.length > 0
+    ? `${prefix}: ${statusCode} ${suffix}`
+    : `${prefix}: ${statusCode}`
+}
+
+function normalizeOAuthErrorDetail(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined
+  const normalized = value.trim().replace(/\s+/g, " ")
+  if (normalized.length === 0) return undefined
+  return normalized.slice(0, 200)
+}
+
+async function readOAuthErrorDetails(response: Response): Promise<OAuthErrorDetails | undefined> {
+  const body = (await response.text()).trim()
+  if (!body) return undefined
+
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>
+    const errorCode = normalizeOAuthErrorDetail(parsed.error)
+    const detail =
+      normalizeOAuthErrorDetail(parsed.error_description) ??
+      normalizeOAuthErrorDetail(parsed.message) ??
+      normalizeOAuthErrorDetail(body)
+
+    if (!errorCode && !detail) {
+      return undefined
+    }
+
+    return { errorCode, detail }
+  } catch {
+    const detail = normalizeOAuthErrorDetail(body)
+    return detail ? { detail } : undefined
+  }
+}
+
+class OAuthTokenError extends Error {
+  readonly statusCode: number
+  readonly errorCode?: string
+  readonly detail?: string
+
+  constructor(name: string, prefix: string, statusCode: number, details?: OAuthErrorDetails) {
+    super(buildOAuthErrorMessage(prefix, statusCode, details))
+    this.name = name
+    this.statusCode = statusCode
+    this.errorCode = details?.errorCode
+    this.detail = details?.detail
+  }
+}
+
+class TokenExchangeError extends OAuthTokenError {
+  constructor(statusCode: number, details?: OAuthErrorDetails) {
+    super("TokenExchangeError", "Token exchange failed", statusCode, details)
+  }
+}
+
+class TokenRefreshError extends OAuthTokenError {
+  constructor(statusCode: number, details?: OAuthErrorDetails) {
+    super("TokenRefreshError", "Token refresh failed", statusCode, details)
+  }
+}
+
 async function exchangeCodeForTokens(code: string, redirectUri: string, pkce: PkceCodes): Promise<TokenResponse> {
   const response = await fetch(`${ISSUER}/oauth/token`, {
     method: "POST",
@@ -123,7 +194,7 @@ async function exchangeCodeForTokens(code: string, redirectUri: string, pkce: Pk
     }).toString(),
   })
   if (!response.ok) {
-    throw new Error(`Token exchange failed: ${response.status}`)
+    throw new TokenExchangeError(response.status, await readOAuthErrorDetails(response))
   }
   return response.json()
 }
@@ -139,7 +210,7 @@ async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> 
     }).toString(),
   })
   if (!response.ok) {
-    throw new Error(`Token refresh failed: ${response.status}`)
+    throw new TokenRefreshError(response.status, await readOAuthErrorDetails(response))
   }
   return response.json()
 }
