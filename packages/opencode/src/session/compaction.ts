@@ -35,15 +35,16 @@ export namespace SessionCompaction {
   const COMPACTION_BUFFER = 20_000
   const COMPACTION_PART_CHAR_LIMIT = 4_000
   const AGGRESSIVE_COMPACTION_PART_CHAR_LIMIT = 1_200
+  export const PRUNE_MINIMUM = 20_000
+  export const PRUNE_PROTECT = 40_000
+  const PRUNE_PROTECTED_TOOLS = ["skill"]
 
   function truncateTextForCompaction(text: string, limit: number) {
     if (text.length <= limit) return text
     const head = Math.max(200, Math.floor(limit * 0.75))
     const tail = Math.max(100, limit - head)
     const omitted = Math.max(0, text.length - head - tail)
-    return [text.slice(0, head), `[Truncated for compaction: ${omitted} chars omitted]`, text.slice(-tail)].join(
-      "\n\n",
-    )
+    return [text.slice(0, head), `[Truncated for compaction: ${omitted} chars omitted]`, text.slice(-tail)].join("\n\n")
   }
 
   function compressMessageForCompaction(input: MessageV2.WithParts, limit = COMPACTION_PART_CHAR_LIMIT): MessageV2.WithParts {
@@ -113,10 +114,11 @@ export namespace SessionCompaction {
   }
 
   async function inputBudget(model: Provider.Model) {
-    const cfg = await Config.get()
+    const config = await Config.get()
     const context = model.limit.context
     if (context === 0) return Number.POSITIVE_INFINITY
-    const reserved = cfg.compaction?.reserved ?? Math.min(COMPACTION_BUFFER, ProviderTransform.maxOutputTokens(model))
+    const reserved =
+      config.compaction?.reserved ?? Math.min(COMPACTION_BUFFER, ProviderTransform.maxOutputTokens(model))
     const usable = model.limit.input
       ? model.limit.input - reserved
       : context - ProviderTransform.maxOutputTokens(model)
@@ -275,10 +277,6 @@ export namespace SessionCompaction {
       trimmed: trimmedSource.length < input.messages.length,
     }
   }
-
-  export const PRUNE_MINIMUM = 20_000
-  export const PRUNE_PROTECT = 40_000
-  const PRUNE_PROTECTED_TOOLS = ["skill"]
 
   export interface Interface {
     readonly isOverflow: (input: {

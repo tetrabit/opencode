@@ -270,12 +270,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const promptRef = usePromptRef()
   const [ctrlCExitArmed, setCtrlCExitArmed] = createSignal(false)
   let ctrlCExitTimer: ReturnType<typeof setTimeout> | undefined
-  const routes: RouteMap = new Map()
-  const [routeRev, setRouteRev] = createSignal(0)
-  const routeView = (name: string) => {
-    routeRev()
-    return routes.get(name)?.at(-1)?.render
-  }
 
   const clearCtrlCExitArm = () => {
     if (ctrlCExitTimer) {
@@ -285,7 +279,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     setCtrlCExitArmed(false)
   }
 
-  const armCtrlCExit = (count: number) => {
+  const armCtrlCExit = (runningSessionCount: number) => {
     clearCtrlCExitArm()
     setCtrlCExitArmed(true)
     ctrlCExitTimer = setTimeout(() => {
@@ -294,11 +288,21 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     toast.show({
       variant: "warning",
       message:
-        count > 0
-          ? `${count === 1 ? "Stopped the running session" : `Stopped ${count} running sessions`}. Press Ctrl-C again to close.`
+        runningSessionCount > 0
+          ? `${runningSessionCount === 1 ? "Stopped the running session" : `Stopped ${runningSessionCount} running sessions`}. Press Ctrl-C again to close.`
           : "Press Ctrl-C again to close.",
       duration: 5000,
     })
+  }
+
+  onCleanup(() => {
+    clearCtrlCExitArm()
+  })
+  const routes: RouteMap = new Map()
+  const [routeRev, setRouteRev] = createSignal(0)
+  const routeView = (name: string) => {
+    routeRev()
+    return routes.get(name)?.at(-1)?.render
   }
 
   const api = createTuiApi({
@@ -317,7 +321,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     renderer,
   })
   onCleanup(() => {
-    clearCtrlCExitArm()
     api.dispose()
   })
   const [ready, setReady] = createSignal(false)
@@ -373,10 +376,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       return
     }
 
-    const sessionIDs = getRunningSessionIDs(sync.data.session_status)
+    const ids = getRunningSessionIDs(sync.data.session_status)
     const action = getCtrlCAction({
       armed: ctrlCExitArmed(),
-      runningSessionCount: sessionIDs.length,
+      runningSessionCount: ids.length,
       promptHasInput: Boolean(promptRef.current?.current.input),
     })
 
@@ -397,14 +400,14 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     }
 
     await Promise.allSettled(
-      [...new Set(sessionIDs)].map((sessionID) =>
+      [...new Set(ids)].map((sessionID) =>
         sdk.client.session.abort({
           sessionID,
         }),
       ),
     )
 
-    armCtrlCExit(sessionIDs.length)
+    armCtrlCExit(ids.length)
   })
 
   // Wire up console copy-to-clipboard via opentui's onCopySelection callback

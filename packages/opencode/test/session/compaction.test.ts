@@ -341,36 +341,6 @@ describe("session.compaction.isOverflow", () => {
   })
 })
 
-describe("session.compaction.create", () => {
-  test("creates a compaction user message and part", async () => {
-    await using tmp = await tmpdir()
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        const session = await Session.create({})
-
-        await SessionCompaction.create({
-          sessionID: session.id,
-          agent: "build",
-          model: ref,
-          auto: true,
-          overflow: true,
-        })
-
-        const msgs = await Session.messages({ sessionID: session.id })
-        expect(msgs).toHaveLength(1)
-        expect(msgs[0].info.role).toBe("user")
-        expect(msgs[0].parts).toHaveLength(1)
-        expect(msgs[0].parts[0]).toMatchObject({
-          type: "compaction",
-          auto: true,
-          overflow: true,
-        })
-      },
-    })
-  })
-})
-
 describe("session.compaction.prepareMessages", () => {
   test("keeps the prior summary and newest turns when the full session no longer fits", async () => {
     await using tmp = await tmpdir()
@@ -378,6 +348,21 @@ describe("session.compaction.prepareMessages", () => {
       directory: tmp.path,
       fn: async () => {
         const model = createModel({ context: 2_400, input: 2_400, output: 400 })
+        const sid = SessionID.make("session_test")
+        const prv = ProviderID.make("test")
+        const mdl = ModelID.make("test-model")
+        const m1 = MessageID.make("message_user_summary")
+        const m2 = MessageID.make("message_assistant_summary")
+        const m3 = MessageID.make("message_user_old")
+        const m4 = MessageID.make("message_assistant_old")
+        const m5 = MessageID.make("message_user_recent")
+        const m6 = MessageID.make("message_assistant_recent")
+        const p1 = PartID.make("part_user_summary")
+        const p2 = PartID.make("part_assistant_summary")
+        const p3 = PartID.make("part_user_old")
+        const p4 = PartID.make("part_assistant_old")
+        const p5 = PartID.make("part_user_recent")
+        const p6 = PartID.make("part_assistant_recent")
         const hugeUser = "OLDER_USER_" + "x".repeat(20_000)
         const hugeAssistant = "OLDER_ASSISTANT_" + "y".repeat(20_000)
         const prepared = await SessionCompaction.prepareMessages({
@@ -386,18 +371,18 @@ describe("session.compaction.prepareMessages", () => {
           messages: [
             {
               info: {
-                id: "message_user_summary",
-                sessionID: "session_test",
+                id: m1,
+                sessionID: sid,
                 role: "user",
                 time: { created: 1 },
                 agent: "sisyphus",
-                model: { providerID: "test", modelID: "test-model" },
+                model: { providerID: prv, modelID: mdl },
               },
               parts: [
                 {
-                  id: "part_user_summary",
-                  sessionID: "session_test",
-                  messageID: "message_user_summary",
+                  id: p1,
+                  sessionID: sid,
+                  messageID: m1,
                   type: "compaction",
                   auto: true,
                 },
@@ -405,12 +390,12 @@ describe("session.compaction.prepareMessages", () => {
             },
             {
               info: {
-                id: "message_assistant_summary",
-                sessionID: "session_test",
+                id: m2,
+                sessionID: sid,
                 role: "assistant",
-                parentID: "message_user_summary",
-                modelID: "test-model",
-                providerID: "test",
+                parentID: m1,
+                modelID: mdl,
+                providerID: prv,
                 mode: "compaction",
                 agent: "compaction",
                 path: { cwd: tmp.path, root: tmp.path },
@@ -422,9 +407,9 @@ describe("session.compaction.prepareMessages", () => {
               },
               parts: [
                 {
-                  id: "part_assistant_summary",
-                  sessionID: "session_test",
-                  messageID: "message_assistant_summary",
+                  id: p2,
+                  sessionID: sid,
+                  messageID: m2,
                   type: "text",
                   text: "SUMMARY_KEEP_ME",
                 },
@@ -432,18 +417,18 @@ describe("session.compaction.prepareMessages", () => {
             },
             {
               info: {
-                id: "message_user_old",
-                sessionID: "session_test",
+                id: m3,
+                sessionID: sid,
                 role: "user",
                 time: { created: 4 },
                 agent: "sisyphus",
-                model: { providerID: "test", modelID: "test-model" },
+                model: { providerID: prv, modelID: mdl },
               },
               parts: [
                 {
-                  id: "part_user_old",
-                  sessionID: "session_test",
-                  messageID: "message_user_old",
+                  id: p3,
+                  sessionID: sid,
+                  messageID: m3,
                   type: "text",
                   text: hugeUser,
                 },
@@ -451,12 +436,12 @@ describe("session.compaction.prepareMessages", () => {
             },
             {
               info: {
-                id: "message_assistant_old",
-                sessionID: "session_test",
+                id: m4,
+                sessionID: sid,
                 role: "assistant",
-                parentID: "message_user_old",
-                modelID: "test-model",
-                providerID: "test",
+                parentID: m3,
+                modelID: mdl,
+                providerID: prv,
                 mode: "sisyphus",
                 agent: "sisyphus",
                 path: { cwd: tmp.path, root: tmp.path },
@@ -467,9 +452,9 @@ describe("session.compaction.prepareMessages", () => {
               },
               parts: [
                 {
-                  id: "part_assistant_old",
-                  sessionID: "session_test",
-                  messageID: "message_assistant_old",
+                  id: p4,
+                  sessionID: sid,
+                  messageID: m4,
                   type: "text",
                   text: hugeAssistant,
                 },
@@ -477,18 +462,18 @@ describe("session.compaction.prepareMessages", () => {
             },
             {
               info: {
-                id: "message_user_recent",
-                sessionID: "session_test",
+                id: m5,
+                sessionID: sid,
                 role: "user",
                 time: { created: 7 },
                 agent: "sisyphus",
-                model: { providerID: "test", modelID: "test-model" },
+                model: { providerID: prv, modelID: mdl },
               },
               parts: [
                 {
-                  id: "part_user_recent",
-                  sessionID: "session_test",
-                  messageID: "message_user_recent",
+                  id: p5,
+                  sessionID: sid,
+                  messageID: m5,
                   type: "text",
                   text: "RECENT_USER_KEEP_ME",
                 },
@@ -496,12 +481,12 @@ describe("session.compaction.prepareMessages", () => {
             },
             {
               info: {
-                id: "message_assistant_recent",
-                sessionID: "session_test",
+                id: m6,
+                sessionID: sid,
                 role: "assistant",
-                parentID: "message_user_recent",
-                modelID: "test-model",
-                providerID: "test",
+                parentID: m5,
+                modelID: mdl,
+                providerID: prv,
                 mode: "sisyphus",
                 agent: "sisyphus",
                 path: { cwd: tmp.path, root: tmp.path },
@@ -512,9 +497,9 @@ describe("session.compaction.prepareMessages", () => {
               },
               parts: [
                 {
-                  id: "part_assistant_recent",
-                  sessionID: "session_test",
-                  messageID: "message_assistant_recent",
+                  id: p6,
+                  sessionID: sid,
+                  messageID: m6,
                   type: "text",
                   text: "RECENT_ASSISTANT_KEEP_ME",
                 },
@@ -541,6 +526,11 @@ describe("session.compaction.prepareMessages", () => {
       directory: tmp.path,
       fn: async () => {
         const model = createModel({ context: 2_400, input: 2_400, output: 400 })
+        const sid = SessionID.make("session_test")
+        const prv = ProviderID.make("test")
+        const mdl = ModelID.make("test-model")
+        const msg = MessageID.make("message_user_latest")
+        const part = PartID.make("part_user_latest")
         const hugeUser = "LATEST_USER_" + "z".repeat(16_000)
         const prepared = await SessionCompaction.prepareMessages({
           model,
@@ -548,18 +538,18 @@ describe("session.compaction.prepareMessages", () => {
           messages: [
             {
               info: {
-                id: "message_user_latest",
-                sessionID: "session_test",
+                id: msg,
+                sessionID: sid,
                 role: "user",
                 time: { created: 1 },
                 agent: "sisyphus",
-                model: { providerID: "test", modelID: "test-model" },
+                model: { providerID: prv, modelID: mdl },
               },
               parts: [
                 {
-                  id: "part_user_latest",
-                  sessionID: "session_test",
-                  messageID: "message_user_latest",
+                  id: part,
+                  sessionID: sid,
+                  messageID: msg,
                   type: "text",
                   text: hugeUser,
                 },
@@ -572,6 +562,36 @@ describe("session.compaction.prepareMessages", () => {
         expect(prepared.truncated).toBe(true)
         expect(rendered).toContain("LATEST_USER_")
         expect(rendered).toContain("[Truncated for compaction:")
+      },
+    })
+  })
+})
+
+describe("session.compaction.create", () => {
+  test("creates a compaction user message and part", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+
+        await SessionCompaction.create({
+          sessionID: session.id,
+          agent: "build",
+          model: ref,
+          auto: true,
+          overflow: true,
+        })
+
+        const msgs = await Session.messages({ sessionID: session.id })
+        expect(msgs).toHaveLength(1)
+        expect(msgs[0].info.role).toBe("user")
+        expect(msgs[0].parts).toHaveLength(1)
+        expect(msgs[0].parts[0]).toMatchObject({
+          type: "compaction",
+          auto: true,
+          overflow: true,
+        })
       },
     })
   })
