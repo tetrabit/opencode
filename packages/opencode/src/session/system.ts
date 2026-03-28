@@ -19,7 +19,8 @@ export namespace SystemPrompt {
     return PROMPT_CODEX.trim()
   }
 
-  export function provider(model: Provider.Model) {
+  export function provider(model: Provider.Model, claudeAuth = false) {
+    if (claudeAuth && model.providerID === "anthropic") return []
     if (model.api.id.includes("gpt-5")) return [PROMPT_CODEX]
     if (model.api.id.includes("gpt-") || model.api.id.includes("o1") || model.api.id.includes("o3"))
       return [PROMPT_BEAST]

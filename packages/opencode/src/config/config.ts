@@ -41,8 +41,18 @@ import { Lock } from "@/util/lock"
 
 export namespace Config {
   const ModelId = z.string().meta({ $ref: "https://models.dev/model-schema.json#/$defs/Model" })
+  const DEFAULT_PLUGINS = ["opencode-claude-auth"]
 
   const log = Log.create({ service: "config" })
+
+  function defaultPluginsDisabled() {
+    const value = process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS?.toLowerCase()
+    return value === "true" || value === "1"
+  }
+
+  export function defaultPlugins() {
+    return defaultPluginsDisabled() ? [] : DEFAULT_PLUGINS
+  }
 
   // Managed settings directory for enterprise deployments (highest priority, admin-controlled)
   // These settings override all user and project settings
@@ -256,7 +266,7 @@ export namespace Config {
       result.compaction = { ...result.compaction, prune: false }
     }
 
-    result.plugin = deduplicatePlugins(result.plugin ?? [])
+    result.plugin = deduplicatePlugins([...defaultPlugins(), ...(result.plugin ?? [])])
 
     return {
       config: result,

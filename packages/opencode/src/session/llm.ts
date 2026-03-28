@@ -64,13 +64,14 @@ export namespace LLM {
       Auth.get(input.model.providerID),
     ])
     const isCodex = provider.id === "openai" && auth?.type === "oauth"
+    const claudeAuth = (cfg.plugin ?? []).some((item) => Config.getPluginName(item) === "opencode-claude-auth")
 
     const system = []
     system.push(
       [
         // use agent prompt otherwise provider prompt
         // For Codex sessions, skip SystemPrompt.provider() since it's sent via options.instructions
-        ...(input.agent.prompt ? [input.agent.prompt] : isCodex ? [] : SystemPrompt.provider(input.model)),
+        ...(input.agent.prompt ? [input.agent.prompt] : isCodex ? [] : SystemPrompt.provider(input.model, claudeAuth)),
         // any custom prompt passed into this call
         ...input.system,
         // any custom prompt from last user message

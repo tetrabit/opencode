@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import path from "path"
+import fs from "fs/promises"
 import { tool, type ModelMessage } from "ai"
 import z from "zod"
 import { LLM } from "../../src/session/llm"
@@ -650,6 +651,93 @@ describe("session.llm.stream", () => {
         expect(body.max_tokens).toBe(ProviderTransform.maxOutputTokens(resolved))
         expect(body.temperature).toBe(0.4)
         expect(body.top_p).toBe(0.9)
+      },
+    })
+  })
+
+  test("does not send the opencode anthropic prompt when claude auth plugin is configured", async () => {
+    const server = state.server
+    if (!server) {
+      throw new Error("Server not initialized")
+    }
+
+    const providerID = "anthropic"
+    const modelID = "claude-3-5-sonnet-20241022"
+    const fixture = await loadFixture(providerID, modelID)
+    const model = fixture.model
+    const request = waitRequest("/messages", createEventResponse([{ type: "message_stop" }]))
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        const pluginDir = path.join(dir, "node_modules", "opencode-claude-auth")
+        await fs.mkdir(pluginDir, { recursive: true })
+        await Bun.write(
+          path.join(pluginDir, "package.json"),
+          JSON.stringify({ name: "opencode-claude-auth", version: "1.0.0", type: "module", main: "./index.js" }),
+        )
+        await Bun.write(path.join(pluginDir, "index.js"), "export default async function plugin() { return {} }\n")
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            $schema: "https://opencode.ai/config.json",
+            enabled_providers: [providerID],
+            plugin: ["opencode-claude-auth"],
+            provider: {
+              [providerID]: {
+                options: {
+                  apiKey: "test-anthropic-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await Provider.getModel(ProviderID.make(providerID), ModelID.make(model.id))
+        const sessionID = SessionID.make("session-test-claude-auth")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          temperature: 0.4,
+          topP: 0.9,
+        } satisfies Agent.Info
+
+        const user = {
+          id: MessageID.make("user-claude-auth"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+        } satisfies MessageV2.User
+
+        const stream = await LLM.stream({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          abort: new AbortController().signal,
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
+
+        for await (const _ of stream.fullStream) {
+        }
+
+        const capture = await request
+        const body = JSON.stringify(capture.body)
+
+        expect(body).not.toContain("You are OpenCode, the best coding agent on the planet.")
+        expect(body).not.toContain("https://github.com/anomalyco/opencode")
+        expect(body).toContain("You are a helpful assistant.")
       },
     })
   })

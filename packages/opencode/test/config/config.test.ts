@@ -67,6 +67,42 @@ test("loads config with defaults when no files exist", async () => {
   })
 })
 
+test("includes default plugins when not disabled", async () => {
+  const prev = process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS
+  delete process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS
+  await using tmp = await tmpdir()
+  try {
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const config = await Config.get()
+        expect(config.plugin).toContain("opencode-claude-auth")
+      },
+    })
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS
+    else process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS = prev
+  }
+})
+
+test("omits default plugins when disabled", async () => {
+  const prev = process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS
+  process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS = "true"
+  await using tmp = await tmpdir()
+  try {
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const config = await Config.get()
+        expect(config.plugin ?? []).not.toContain("opencode-claude-auth")
+      },
+    })
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS
+    else process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS = prev
+  }
+})
+
 test("loads JSON config file", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
